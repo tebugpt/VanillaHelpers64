@@ -11,6 +11,7 @@ namespace TexProto {
 // ── Named pipe / shared memory names ────────────────────────────────────
 constexpr const char* PIPE_NAME = "\\\\.\\pipe\\VH_TextureServer";
 constexpr const char* SHM_NAME  = "VH_TexServer_SharedMem";
+constexpr const char* SHM_DATA_NAME_PREFIX = "VH_TexServer_SharedMem_Data";
 
 // ── Slot / shared-memory layout constants ───────────────────────────────
 constexpr uint32_t SLOT_COUNT     = 64;
@@ -20,6 +21,12 @@ constexpr uint32_t SLOT_TOTAL     = SLOT_HEADER + SLOT_DATA_SIZE;
 constexpr uint32_t SHM_HEADER     = 4096;
 constexpr uint64_t SHM_TOTAL_SIZE = static_cast<uint64_t>(SHM_HEADER)
                                   + static_cast<uint64_t>(SLOT_COUNT) * SLOT_TOTAL;
+
+// Multi-window SHM layout (used by SharedMemory / Server)
+constexpr uint32_t SHM_WINDOW_COUNT   = 4;
+constexpr uint32_t SLOTS_PER_WINDOW   = SLOT_COUNT / SHM_WINDOW_COUNT;
+constexpr uint64_t SHM_DATA_WINDOW_SIZE =
+    static_cast<uint64_t>(SLOTS_PER_WINDOW) * SLOT_TOTAL;
 
 // ── Command enum (client -> server) ─────────────────────────────────────
 enum class Cmd : uint8_t {
