@@ -1424,29 +1424,35 @@ static bool ReconnectServer() {
 static int32_t SendToServer(const char *path, const uint8_t *rawData,
                             uint32_t rawSize, uint8_t priority,
                             TBProto::Response *outResp) {
-    // Retry pipe open up to 3 times on ERROR_PIPE_BUSY (231).
+    // Retry pipe open on ERROR_PIPE_BUSY (231) and ERROR_FILE_NOT_FOUND (2).
     HANDLE pipe = INVALID_HANDLE_VALUE;
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    DWORD lastErr = 0;
+    constexpr int kMaxAttempts = 8;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
         pipe = CreateFileA(
             TBProto::PIPE_NAME, GENERIC_READ | GENERIC_WRITE,
             0, nullptr, OPEN_EXISTING, 0, nullptr);
         if (pipe != INVALID_HANDLE_VALUE)
             break;
-        DWORD err = GetLastError();
-        if (err == ERROR_PIPE_BUSY) {
-            // Wait up to 500ms for a pipe instance to become available.
+
+        lastErr = GetLastError();
+        if (lastErr == ERROR_PIPE_BUSY) {
             WaitNamedPipeA(TBProto::PIPE_NAME, 500);
             continue;
         }
-        if (attempt == 0 && err == ERROR_FILE_NOT_FOUND) {
-            if (ReconnectServer())
-                continue;
+        if (lastErr == ERROR_FILE_NOT_FOUND) {
+            if (attempt == 0)
+                ReconnectServer();
+            if (!WaitNamedPipeA(TBProto::PIPE_NAME, 200))
+                Sleep(20 + static_cast<DWORD>(attempt) * 10);
+            continue;
         }
-        LogWrite("SendToServer: pipe open failed, err=%lu", err);
+        LogWrite("SendToServer: pipe open failed, err=%lu", lastErr);
         return -1;
     }
     if (pipe == INVALID_HANDLE_VALUE) {
-        LogWrite("SendToServer: pipe busy after 3 retries for '%s'", path);
+        LogWrite("SendToServer: pipe open failed after %d retries, err=%lu for '%s'",
+                 kMaxAttempts, lastErr, path);
         return -1;
     }
 
