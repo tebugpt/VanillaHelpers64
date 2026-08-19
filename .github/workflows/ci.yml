@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure VanillaHelpers (Win32)
+        run: >
+          cmake -S VanillaHelpers -B build-dll
+          -G "Visual Studio 17 2022"
+          -A Win32
+
+      - name: Build VanillaHelpers.dll
+        run: cmake --build build-dll --config Release --parallel
+
+      - name: Configure TextureServer64 (x64)
+        run: >
+          cmake -S TextureServer64 -B build-server
+          -G "Visual Studio 17 2022"
+          -A x64
+
+      - name: Build TextureServer64.exe
+        run: cmake --build build-server --config Release --parallel
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VanillaHelpers64
+          path: |
+            build-dll/Release/VanillaHelpers.dll
+            build-server/server/Release/TextureServer64.exe
+          if-no-files-found: error
+          retention-days: 14
