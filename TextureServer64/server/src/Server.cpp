@@ -61,7 +61,7 @@ bool Server::Start() {
     }
 
     running_.store(true, std::memory_order_release);
-    printf("[TextureServer] Shared memory created OK. Slots=%u, SlotDataSize=%u KiB, Windows=%u, SlotsPerWindow=%u\n",
+    printf("[TextureServer] Shared memory created OK.Slots=%u, SlotDataSize=%u KiB, Windows=%u, SlotsPerWindow=%u\n",
            TexProto::SLOT_COUNT, TexProto::SLOT_DATA_SIZE / 1024,
            TexProto::SHM_WINDOW_COUNT, TexProto::SLOTS_PER_WINDOW);
     printf("[TextureServer] Started. PID=%lu, threads=%u, cache_max=%.1f MiB\n",
@@ -78,30 +78,33 @@ void Server::Stop() {
 
 // ── Named-pipe accept loop ─────────────────────────────────────────────────
 
+static HANDLE CreateServerPipeInstance() {
+    return CreateNamedPipeA(
+        TexProto::PIPE_NAME,
+        PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        PIPE_UNLIMITED_INSTANCES,
+        64 * 1024,   // out buffer
+        64 * 1024,   // in buffer
+        0,           // default timeout
+        nullptr      // default security
+    );
+}
+
 void Server::Run() {
+    // Keep one listening instance alive while handling a connected client.
+    // Without this, concurrent CreateFile from TexBridge hits ERROR_FILE_NOT_FOUND
+    // (err=2) during synchronous decode / between CloseHandle and the next
+    // CreateNamedPipe.
+    HANDLE pipe = CreateServerPipeInstance();
+    if (pipe == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "[TextureServer] CreateNamedPipe failed: %lu\n",
+                GetLastError());
+        fflush(stderr);
+        return;
+    }
+
     while (running_.load(std::memory_order_acquire)) {
-        // Create a new named pipe instance for the next client.
-        HANDLE pipe = CreateNamedPipeA(
-            TexProto::PIPE_NAME,
-            PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-            PIPE_UNLIMITED_INSTANCES,
-            64 * 1024,   // out buffer
-            64 * 1024,   // in buffer
-            0,           // default timeout
-            nullptr      // default security
-        );
-
-        if (pipe == INVALID_HANDLE_VALUE) {
-            if (running_.load(std::memory_order_acquire)) {
-                fprintf(stderr, "[TextureServer] CreateNamedPipe failed: %lu\n",
-                        GetLastError());
-                Sleep(100);
-            }
-            continue;
-        }
-
-        // Wait for a client to connect.  ConnectNamedPipe blocks.
         printf("[TextureServer] Waiting for pipe connection...\n");
         fflush(stdout);
 
@@ -114,19 +117,50 @@ void Server::Run() {
                    GetLastError());
             fflush(stdout);
             CloseHandle(pipe);
-            continue;
+            pipe = INVALID_HANDLE_VALUE;
+            break;
         }
 
         printf("[TextureServer] Client connected!\n");
         fflush(stdout);
 
-        // Handle all requests from this client on the accept thread.
+        // Create the *next* listening instance BEFORE handling this client so
+        // other concurrent requests can still open the pipe.
+        HANDLE next = CreateServerPipeInstance();
+        if (next == INVALID_HANDLE_VALUE) {
+            fprintf(stderr,
+                    "[TextureServer] CreateNamedPipe (next) failed: %lu — "
+                    "handling client without standby listener\n",
+                    GetLastError());
+            fflush(stderr);
+        }
+
         HandleClient(pipe);
 
         FlushFileBuffers(pipe);
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
+
+        if (next == INVALID_HANDLE_VALUE) {
+            // Fallback: recreate a listener before accepting again.
+            next = CreateServerPipeInstance();
+            if (next == INVALID_HANDLE_VALUE) {
+                fprintf(stderr, "[TextureServer] CreateNamedPipe failed: %lu\n",
+                        GetLastError());
+                fflush(stderr);
+                Sleep(100);
+                if (!running_.load(std::memory_order_acquire))
+                    break;
+                next = CreateServerPipeInstance();
+                if (next == INVALID_HANDLE_VALUE)
+                    break;
+            }
+        }
+        pipe = next;
     }
+
+    if (pipe != INVALID_HANDLE_VALUE)
+        CloseHandle(pipe);
 
     printf("[TextureServer] Shutting down. Waiting for in-flight decodes...\n");
     pool_.WaitIdle();
