@@ -14,35 +14,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Detect Visual Studio generator
-        id: vs
-        shell: pwsh
-        run: |
-          $gens = & cmake -G 2>&1 | Out-String
-          Write-Host $gens
-          if ($gens -match 'Visual Studio 18') {
-            echo "generator=Visual Studio 18 2026" >> $env:GITHUB_OUTPUT
-          } elseif ($gens -match 'Visual Studio 17 2022') {
-            echo "generator=Visual Studio 17 2022" >> $env:GITHUB_OUTPUT
-          } elseif ($gens -match 'Visual Studio 16 2019') {
-            echo "generator=Visual Studio 16 2019" >> $env:GITHUB_OUTPUT
-          } else {
-            echo "generator=Visual Studio 17 2022" >> $env:GITHUB_OUTPUT
-          }
-          Write-Host "Using generator: $((Get-Content $env:GITHUB_OUTPUT)[-1])"
-
       - name: Configure VanillaHelpers (Win32)
-        run: |
-          cmake -S VanillaHelpers -B build-dll -G "${{ steps.vs.outputs.generator }}" -A Win32
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: cmake -S VanillaHelpers -B build-dll -G "Visual Studio 18 2026" -A Win32
 
       - name: Build VanillaHelpers.dll
         run: cmake --build build-dll --config Release --parallel
 
       - name: Configure TextureServer64 (x64)
-        run: |
-          cmake -S TextureServer64 -B build-server -G "${{ steps.vs.outputs.generator }}" -A x64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: cmake -S TextureServer64 -B build-server -G "Visual Studio 18 2026" -A x64
 
       - name: Build TextureServer64.exe
         run: cmake --build build-server --config Release --parallel
