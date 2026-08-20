@@ -190,6 +190,8 @@ static bool ShouldSuppressCompactLog(const char *fmt) {
         "Worker: decoded OK",
         "TextureCreate_h: #",
         "PROBE #",
+        "  D3D9: candidate=",
+        "  D3D9: IDirect3DTexture9=",
     };
 
     for (const char *prefix : noisyPrefixes) {
