@@ -111,7 +111,7 @@ bool BlpDecoder::ParseHeader(const uint8_t* data, size_t size, BlpInfo& info) {
 
     if (info.width == 0 || info.height == 0) return false;
 
-    // Count valid mipmap levels
+    // Count valid mipmap levels (stop at first zero)
     info.mip_count = 0;
     for (int i = 0; i < 16; ++i) {
         if (info.mip_offsets[i] != 0 && info.mip_sizes[i] != 0)
@@ -119,6 +119,14 @@ bool BlpDecoder::ParseHeader(const uint8_t* data, size_t size, BlpInfo& info) {
         else
             break;
     }
+
+    // Debug: dump mip table
+    printf("[BlpDecoder] mip table (first 12):\n");
+    for (int i = 0; i < 12; ++i) {
+        printf("  [%2d] offset=%10u  size=%8u\n",
+               i, info.mip_offsets[i], info.mip_sizes[i]);
+    }
+    fflush(stdout);
 
     return true;
 }
@@ -309,35 +317,61 @@ bool BlpDecoder::DecodePalette(const uint8_t* data, size_t size,
     return true;
 }
 
-// ── BLP2 DXT pass-through ────────────────────────────────────────────
+// ── BLP2 DXT pass-through (with detailed debug) ──────────────────────
 // DXT blocks are passed through as-is. The format is determined by
 // alpha_type: 0=DXT1, 1=DXT3, 7=DXT5.
 
 bool BlpDecoder::DecodeDxt(const uint8_t* data, size_t size,
                            const BlpInfo& info, DecodedTexture& result) {
-    if (info.mip_count == 0) return false;
+    if (info.mip_count == 0) {
+        printf("[BlpDecoder] DXT FAIL: mip_count == 0\n");
+        fflush(stdout);
+        return false;
+    }
+
+    printf("[BlpDecoder] DXT check: file_size=%zu, claimed_mips=%u, alpha_type=%u\n",
+           size, info.mip_count, info.alpha_type);
+    fflush(stdout);
 
     size_t total_size = 0;
     for (uint32_t i = 0; i < info.mip_count; ++i) {
         uint32_t mip_off = info.mip_offsets[i];
         uint32_t mip_sz  = info.mip_sizes[i];
-        if (mip_off == 0 || mip_sz == 0) return false;
-        if (static_cast<uint64_t>(mip_off) + mip_sz > size) return false;
+
+        printf("[BlpDecoder]   mip[%2u]: offset=%10u  size=%8u", i, mip_off, mip_sz);
+
+        if (mip_off == 0 || mip_sz == 0) {
+            printf("  --> ZERO offset/size  *** FAIL ***\n");
+            fflush(stdout);
+            return false;
+        }
+
+        if (static_cast<uint64_t>(mip_off) + mip_sz > size) {
+            printf("  --> OUT OF BOUNDS (%u + %u > %zu)  *** FAIL ***\n",
+                   mip_off, mip_sz, size);
+            fflush(stdout);
+            return false;
+        }
+
+        printf("  OK\n");
+        fflush(stdout);
         total_size += mip_sz;
     }
 
+    // All checks passed – do the actual pass-through
     result.pixels.clear();
     result.pixels.reserve(total_size);
     for (uint32_t i = 0; i < info.mip_count; ++i) {
         uint32_t mip_off = info.mip_offsets[i];
         uint32_t mip_sz  = info.mip_sizes[i];
-        result.pixels.insert(result.pixels.end(), data + mip_off, data + mip_off + mip_sz);
+        result.pixels.insert(result.pixels.end(),
+                             data + mip_off, data + mip_off + mip_sz);
     }
-    result.width  = info.width;
-    result.height = info.height;
+
+    result.width      = info.width;
+    result.height     = info.height;
     result.mip_levels = static_cast<uint8_t>(info.mip_count);
 
-    // Map alpha_type to DXT variant.
     switch (info.alpha_type) {
         case 0:  result.format = TexProto::PixelFormat::DXT1; break;
         case 1:  result.format = TexProto::PixelFormat::DXT3; break;
@@ -345,7 +379,7 @@ bool BlpDecoder::DecodeDxt(const uint8_t* data, size_t size,
         default: result.format = TexProto::PixelFormat::DXT1; break;
     }
 
-    printf("[BlpDecoder] DXT pass-through: %ux%u, alpha_type=%u, mips=%u, %zu bytes\n",
+    printf("[BlpDecoder] DXT pass-through OK: %ux%u, alpha_type=%u, mips=%u, %zu bytes\n",
            info.width, info.height, info.alpha_type, info.mip_count, total_size);
     fflush(stdout);
 
