@@ -111,22 +111,29 @@ bool BlpDecoder::ParseHeader(const uint8_t* data, size_t size, BlpInfo& info) {
 
     if (info.width == 0 || info.height == 0) return false;
 
-    // Count valid mipmap levels (stop at first zero)
+    // Count valid mipmap levels.
+    // Stop on zero entries OR entries that would read past the end of the file.
+    // This correctly handles non-standard BLP writers that put offset=file_size
+    // and a garbage size into the next unused mip slot (common in some Warlords
+    // UI assets).
     info.mip_count = 0;
     for (int i = 0; i < 16; ++i) {
-        if (info.mip_offsets[i] != 0 && info.mip_sizes[i] != 0)
-            info.mip_count = static_cast<uint32_t>(i + 1);
-        else
-            break;
-    }
+        uint32_t off = info.mip_offsets[i];
+        uint32_t sz  = info.mip_sizes[i];
 
-    // Debug: dump mip table
-    printf("[BlpDecoder] mip table (first 12):\n");
-    for (int i = 0; i < 12; ++i) {
-        printf("  [%2d] offset=%10u  size=%8u\n",
-               i, info.mip_offsets[i], info.mip_sizes[i]);
+        if (off == 0 || sz == 0)
+            break;
+
+        // Reject entries that would go past EOF
+        if (static_cast<uint64_t>(off) + sz > size)
+            break;
+
+        // Extra safety: reject absurdly large sizes
+        if (sz > 16u * 1024u * 1024u)
+            break;
+
+        info.mip_count = static_cast<uint32_t>(i + 1);
     }
-    fflush(stdout);
 
     return true;
 }
@@ -317,7 +324,7 @@ bool BlpDecoder::DecodePalette(const uint8_t* data, size_t size,
     return true;
 }
 
-// ── BLP2 DXT pass-through (with detailed debug) ──────────────────────
+// ── BLP2 DXT pass-through ────────────────────────────────────────────
 // DXT blocks are passed through as-is. The format is determined by
 // alpha_type: 0=DXT1, 1=DXT3, 7=DXT5.
 
@@ -329,36 +336,27 @@ bool BlpDecoder::DecodeDxt(const uint8_t* data, size_t size,
         return false;
     }
 
-    printf("[BlpDecoder] DXT check: file_size=%zu, claimed_mips=%u, alpha_type=%u\n",
-           size, info.mip_count, info.alpha_type);
-    fflush(stdout);
-
     size_t total_size = 0;
     for (uint32_t i = 0; i < info.mip_count; ++i) {
         uint32_t mip_off = info.mip_offsets[i];
         uint32_t mip_sz  = info.mip_sizes[i];
 
-        printf("[BlpDecoder]   mip[%2u]: offset=%10u  size=%8u", i, mip_off, mip_sz);
-
+        // These should already be validated by ParseHeader, but keep the
+        // defensive checks for safety.
         if (mip_off == 0 || mip_sz == 0) {
-            printf("  --> ZERO offset/size  *** FAIL ***\n");
+            printf("[BlpDecoder] DXT FAIL: mip%u zero offset/size\n", i);
             fflush(stdout);
             return false;
         }
-
         if (static_cast<uint64_t>(mip_off) + mip_sz > size) {
-            printf("  --> OUT OF BOUNDS (%u + %u > %zu)  *** FAIL ***\n",
-                   mip_off, mip_sz, size);
+            printf("[BlpDecoder] DXT FAIL: mip%u out of bounds (%u+%u > %zu)\n",
+                   i, mip_off, mip_sz, size);
             fflush(stdout);
             return false;
         }
-
-        printf("  OK\n");
-        fflush(stdout);
         total_size += mip_sz;
     }
 
-    // All checks passed – do the actual pass-through
     result.pixels.clear();
     result.pixels.reserve(total_size);
     for (uint32_t i = 0; i < info.mip_count; ++i) {
@@ -379,7 +377,7 @@ bool BlpDecoder::DecodeDxt(const uint8_t* data, size_t size,
         default: result.format = TexProto::PixelFormat::DXT1; break;
     }
 
-    printf("[BlpDecoder] DXT pass-through OK: %ux%u, alpha_type=%u, mips=%u, %zu bytes\n",
+    printf("[BlpDecoder] DXT pass-through: %ux%u, alpha_type=%u, mips=%u, %zu bytes\n",
            info.width, info.height, info.alpha_type, info.mip_count, total_size);
     fflush(stdout);
 
