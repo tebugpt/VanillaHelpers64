@@ -94,8 +94,27 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
         TexBridge::EnsureServerRunning();
         TexBridge::InstallHooks();
     } else if (reason == DLL_PROCESS_DETACH) {
-        TexBridge::Shutdown(true);
-        MH_Uninitialize();
+        // lpReserved != nullptr means the process is terminating (e.g. the user quit the
+        // game and the OS called ExitProcess), as opposed to an explicit FreeLibrary() call.
+        // On process termination, every thread except the one calling ExitProcess has already
+        // been forcibly killed *before* this notification runs, so:
+        //   - TexBridge::Shutdown(true)'s WaitForSingleObject on the worker thread can hit a
+        //     thread that died mid-lock, and the SRWLock acquires later in Shutdown() can hang
+        //     forever waiting on a lock that will never be released (SRWLocks are not
+        //     abandoned like mutexes on thread death).
+        //   - Its synchronous named-pipe write to the TextureServer64 process, and its batch of
+        //     ReleaseD3DTexture() calls, both funnel back into Allocator.cpp's hooked/patched
+        //     SMem paths at exactly the moment MH_Uninitialize() below would be unhooking them,
+        //     leaving a half-reverted allocator state — the same asymmetry (permanent
+        //     Common::PatchBytes patches, revertible MinHook hooks) discussed for the original
+        //     VanillaHelpers DLL, but exercised harder here by all the extra teardown work.
+        // None of this cleanup is needed when the whole process address space is about to be
+        // torn down anyway, so skip it entirely on real process termination and only run it on
+        // a genuine explicit unload.
+        if (lpReserved == nullptr) {
+            TexBridge::Shutdown(true);
+            MH_Uninitialize();
+        }
     }
     return TRUE;
 }
