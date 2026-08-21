@@ -363,6 +363,11 @@ static std::unordered_set<uint64_t> s_pendingDecodes;
 static HANDLE  s_workerThread = nullptr;
 static volatile bool s_workerRunning = false;
 
+// Job Object binding TextureServer64.exe's lifetime to ours (see
+// EnsureServerRunning): never closed explicitly, so the OS reaps the server
+// process automatically whenever this process's handles go away.
+static HANDLE  s_jobObject = nullptr;
+
 // Back-pressure
 static volatile LONG s_inflight = 0;
 static volatile LONG s_queuedBytes = 0;
@@ -2767,6 +2772,45 @@ bool EnsureServerRunning() {
     }
 
     LogWrite("EnsureServerRunning: launched PID=%lu", pi.dwProcessId);
+
+    // Bind the server process's lifetime to ours via a Job Object with
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: once the *last* handle to the job
+    // is closed, every process still in the job is terminated by the OS.
+    // We deliberately never close s_jobObject ourselves and never send an
+    // explicit shutdown message on exit (see DllMain's DLL_PROCESS_DETACH
+    // handling) — when WoW.exe's process object goes away, for any reason
+    // (normal exit, crash, or being killed from Task Manager), the OS closes
+    // all of its handles including this one, which triggers the kill and
+    // reaps TextureServer64.exe automatically. This replaces relying on a
+    // synchronous CMD_SHUTDOWN pipe write during process teardown, which is
+    // both unsafe at that point and, as of the DLL_PROCESS_DETACH fix, no
+    // longer even attempted on real process termination.
+    if (!s_jobObject) {
+        s_jobObject = CreateJobObjectA(nullptr, nullptr);
+        if (s_jobObject) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (!SetInformationJobObject(s_jobObject, JobObjectExtendedLimitInformation,
+                                         &limits, sizeof(limits))) {
+                LogWrite("EnsureServerRunning: SetInformationJobObject FAILED, err=%lu",
+                         GetLastError());
+                CloseHandle(s_jobObject);
+                s_jobObject = nullptr;
+            }
+        } else {
+            LogWrite("EnsureServerRunning: CreateJobObjectA FAILED, err=%lu", GetLastError());
+        }
+    }
+    if (s_jobObject) {
+        if (AssignProcessToJobObject(s_jobObject, pi.hProcess)) {
+            LogWrite("EnsureServerRunning: server PID=%lu bound to job object",
+                     pi.dwProcessId);
+        } else {
+            LogWrite("EnsureServerRunning: AssignProcessToJobObject FAILED, err=%lu",
+                     GetLastError());
+        }
+    }
+
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 
